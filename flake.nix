@@ -3,22 +3,32 @@
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
+    systems.url = "github:nix-systems/default";
   };
 
   outputs = {
     self,
     nixpkgs,
+    systems,
   }: let
-    system = "x86_64-linux";
-    pkgs = nixpkgs.legacyPackages.${system};
+    # Helper to iterate over each system (replaces flake-utils)
+    eachSystem = f:
+      nixpkgs.lib.genAttrs (import systems) (
+        system: f nixpkgs.legacyPackages.${system}
+      );
   in {
-    apps.${system} = {
+    apps = eachSystem (pkgs: {
       export = {
         type = "app";
         program = toString (pkgs.writeShellScript "chromium-bookmarks-export" ''
           set -e
 
-          CHROMIUM_DIR="$HOME/.config/chromium"
+          # Auto-detect OS and set Chromium directory
+          if [[ "$OSTYPE" == "darwin"* ]]; then
+            CHROMIUM_DIR="$HOME/Library/Application Support/Chromium"
+          else
+            CHROMIUM_DIR="$HOME/.config/chromium"
+          fi
           DATA_DIR="./bookmarks"
 
           if [ ! -d "$CHROMIUM_DIR" ]; then
@@ -92,7 +102,12 @@
         program = toString (pkgs.writeShellScript "chromium-bookmarks-import" ''
           set -e
 
-          CHROMIUM_DIR="$HOME/.config/chromium"
+          # Auto-detect OS and set Chromium directory
+          if [[ "$OSTYPE" == "darwin"* ]]; then
+            CHROMIUM_DIR="$HOME/Library/Application Support/Chromium"
+          else
+            CHROMIUM_DIR="$HOME/.config/chromium"
+          fi
           DATA_DIR="./bookmarks"
 
           if [ ! -d "$DATA_DIR" ]; then
@@ -186,10 +201,15 @@
       list = {
         type = "app";
         program = toString (pkgs.writeShellScript "chromium-bookmarks-list" ''
+          # Auto-detect OS and set Chromium directory
+          if [[ "$OSTYPE" == "darwin"* ]]; then
+            CHROMIUM_DIR="$HOME/Library/Application Support/Chromium"
+          else
+            CHROMIUM_DIR="$HOME/.config/chromium"
+          fi
+
           echo "Chromium Profiles:"
           echo ""
-
-          CHROMIUM_DIR="$HOME/.config/chromium"
 
           if [ ! -d "$CHROMIUM_DIR" ]; then
             echo "Error: Chromium directory not found at $CHROMIUM_DIR"
@@ -232,6 +252,6 @@
           echo "  3. Run 'nix run .#import' to load bookmarks into Chromium"
         '');
       };
-    };
+    });
   };
 }
