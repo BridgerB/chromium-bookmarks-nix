@@ -13,100 +13,91 @@
     pkgs = nixpkgs.legacyPackages.${system};
   in {
     apps.${system} = {
-      push = {
+      export = {
         type = "app";
-        program = toString (pkgs.writeShellScript "chromium-bookmarks-push" ''
+        program = toString (pkgs.writeShellScript "chromium-bookmarks-export" ''
           set -e
 
-          if [ $# -ne 2 ]; then
-            echo "Usage: nix run .#push -- <chromium-bookmarks-path> <git-json-path>"
-            echo ""
-            echo "Example:"
-            echo "  nix run .#push -- ~/.config/chromium/Default/Bookmarks ~/git/bookmarks/work.json"
+          CHROMIUM_DIR="$HOME/.config/chromium"
+          DATA_DIR="./bookmarks"
+
+          if [ ! -d "$CHROMIUM_DIR" ]; then
+            echo "Error: Chromium directory not found at $CHROMIUM_DIR"
             exit 1
           fi
 
-          CHROMIUM_PATH="$1"
-          GIT_PATH="$2"
+          # Create bookmarks directory if it doesn't exist
+          mkdir -p "$DATA_DIR"
 
-          # Expand tilde
-          CHROMIUM_PATH="''${CHROMIUM_PATH/#\~/$HOME}"
-          GIT_PATH="''${GIT_PATH/#\~/$HOME}"
-
-          echo "Pushing bookmarks..."
-          echo "  From: $CHROMIUM_PATH"
-          echo "  To:   $GIT_PATH"
+          echo "Exporting bookmarks from all Chromium profiles..."
           echo ""
 
-          # Check if source exists
-          if [ ! -f "$CHROMIUM_PATH" ]; then
-            echo "Error: Source file does not exist: $CHROMIUM_PATH"
-            exit 1
+          EXPORTED_COUNT=0
+
+          # Function to export a single profile
+          export_profile() {
+            local PROFILE_DIR="$1"
+            local BOOKMARKS_FILE="$PROFILE_DIR/Bookmarks"
+
+            if [ ! -f "$BOOKMARKS_FILE" ]; then
+              return
+            fi
+
+            # Get profile name from Preferences
+            local PREFS_FILE="$PROFILE_DIR/Preferences"
+            local PROFILE_NAME=""
+
+            if [ -f "$PREFS_FILE" ]; then
+              PROFILE_NAME=$(${pkgs.jq}/bin/jq -r '.profile.name // ""' "$PREFS_FILE" 2>/dev/null | tr '[:upper:]' '[:lower:]' | sed 's/ /-/g')
+            fi
+
+            # Fallback to directory name if no custom name
+            if [ -z "$PROFILE_NAME" ]; then
+              PROFILE_NAME=$(basename "$PROFILE_DIR" | tr '[:upper:]' '[:lower:]' | sed 's/ /-/g')
+            fi
+
+            local OUTPUT_FILE="$DATA_DIR/$PROFILE_NAME.json"
+
+            # Validate JSON
+            if ! ${pkgs.jq}/bin/jq empty "$BOOKMARKS_FILE" 2>/dev/null; then
+              echo "⚠️  Skipping $PROFILE_NAME: Invalid JSON"
+              return
+            fi
+
+            # Copy the file
+            cp "$BOOKMARKS_FILE" "$OUTPUT_FILE"
+            echo "✓ Exported: $PROFILE_NAME → $OUTPUT_FILE"
+            EXPORTED_COUNT=$((EXPORTED_COUNT + 1))
+          }
+
+          # Export Default profile
+          if [ -d "$CHROMIUM_DIR/Default" ]; then
+            export_profile "$CHROMIUM_DIR/Default"
           fi
 
-          # Validate JSON
-          if ! ${pkgs.jq}/bin/jq empty "$CHROMIUM_PATH" 2>/dev/null; then
-            echo "Error: Source file is not valid JSON"
-            exit 1
-          fi
-
-          # Create backup of destination if it exists
-          if [ -f "$GIT_PATH" ]; then
-            BACKUP="''${GIT_PATH}.backup.$(date +%Y%m%d_%H%M%S)"
-            echo "Creating backup: $BACKUP"
-            cp "$GIT_PATH" "$BACKUP"
-          fi
-
-          # Copy the file
-          cp "$CHROMIUM_PATH" "$GIT_PATH"
+          # Export numbered profiles
+          for profile_dir in "$CHROMIUM_DIR"/Profile*; do
+            if [ -d "$profile_dir" ]; then
+              export_profile "$profile_dir"
+            fi
+          done
 
           echo ""
-          echo "✓ Push complete!"
-          echo ""
-
-          # Show git diff if in a git repo
-          GIT_DIR=$(dirname "$GIT_PATH")
-          if git -C "$GIT_DIR" rev-parse --git-dir > /dev/null 2>&1; then
-            echo "Git changes:"
-            git -C "$GIT_DIR" diff "$GIT_PATH" || true
-          fi
+          echo "✓ Export complete! Exported $EXPORTED_COUNT profile(s) to $DATA_DIR/"
         '');
       };
 
-      pull = {
+      import = {
         type = "app";
-        program = toString (pkgs.writeShellScript "chromium-bookmarks-pull" ''
+        program = toString (pkgs.writeShellScript "chromium-bookmarks-import" ''
           set -e
 
-          if [ $# -ne 2 ]; then
-            echo "Usage: nix run .#pull -- <git-json-path> <chromium-bookmarks-path>"
-            echo ""
-            echo "Example:"
-            echo "  nix run .#pull -- ~/git/bookmarks/work.json ~/.config/chromium/Default/Bookmarks"
-            exit 1
-          fi
+          CHROMIUM_DIR="$HOME/.config/chromium"
+          DATA_DIR="./bookmarks"
 
-          GIT_PATH="$1"
-          CHROMIUM_PATH="$2"
-
-          # Expand tilde
-          GIT_PATH="''${GIT_PATH/#\~/$HOME}"
-          CHROMIUM_PATH="''${CHROMIUM_PATH/#\~/$HOME}"
-
-          echo "Pulling bookmarks..."
-          echo "  From: $GIT_PATH"
-          echo "  To:   $CHROMIUM_PATH"
-          echo ""
-
-          # Check if source exists
-          if [ ! -f "$GIT_PATH" ]; then
-            echo "Error: Source file does not exist: $GIT_PATH"
-            exit 1
-          fi
-
-          # Validate JSON
-          if ! ${pkgs.jq}/bin/jq empty "$GIT_PATH" 2>/dev/null; then
-            echo "Error: Source file is not valid JSON"
+          if [ ! -d "$DATA_DIR" ]; then
+            echo "Error: Bookmarks directory not found at $DATA_DIR"
+            echo "Nothing to import!"
             exit 1
           fi
 
@@ -123,22 +114,72 @@
             fi
           fi
 
-          # Create backup of destination if it exists
-          if [ -f "$CHROMIUM_PATH" ]; then
-            BACKUP="''${CHROMIUM_PATH}.backup.$(date +%Y%m%d_%H%M%S)"
-            echo "Creating backup: $BACKUP"
-            cp "$CHROMIUM_PATH" "$BACKUP"
-          fi
-
-          # Create directory if it doesn't exist
-          mkdir -p "$(dirname "$CHROMIUM_PATH")"
-
-          # Copy the file
-          cp "$GIT_PATH" "$CHROMIUM_PATH"
-
+          echo "Importing bookmarks from $DATA_DIR/ to Chromium profiles..."
           echo ""
-          echo "✓ Pull complete!"
-          echo "  Restart Chromium to see changes."
+
+          IMPORTED_COUNT=0
+
+          # Function to find or create profile for a given name
+          import_profile() {
+            local JSON_FILE="$1"
+            local PROFILE_NAME=$(basename "$JSON_FILE" .json | tr '[:upper:]' '[:lower:]')
+
+            # Validate JSON
+            if ! ${pkgs.jq}/bin/jq empty "$JSON_FILE" 2>/dev/null; then
+              echo "⚠️  Skipping $PROFILE_NAME: Invalid JSON"
+              return
+            fi
+
+            # Try to find existing profile with matching name
+            local TARGET_DIR=""
+            for profile_dir in "$CHROMIUM_DIR"/Default "$CHROMIUM_DIR"/Profile*; do
+              if [ -d "$profile_dir" ]; then
+                local PREFS_FILE="$profile_dir/Preferences"
+                if [ -f "$PREFS_FILE" ]; then
+                  local EXISTING_NAME=$(${pkgs.jq}/bin/jq -r '.profile.name // ""' "$PREFS_FILE" 2>/dev/null | tr '[:upper:]' '[:lower:]' | sed 's/ /-/g')
+                  if [ "$EXISTING_NAME" = "$PROFILE_NAME" ]; then
+                    TARGET_DIR="$profile_dir"
+                    break
+                  fi
+                fi
+              fi
+            done
+
+            # If no matching profile found, we can't auto-create (Chromium manages profiles)
+            if [ -z "$TARGET_DIR" ]; then
+              echo "⚠️  No profile found matching '$PROFILE_NAME'"
+              echo "   Please create a profile named '$PROFILE_NAME' in Chromium first, or rename the JSON file"
+              return
+            fi
+
+            local BOOKMARKS_FILE="$TARGET_DIR/Bookmarks"
+
+            # Create backup if exists
+            if [ -f "$BOOKMARKS_FILE" ]; then
+              local BACKUP="''${BOOKMARKS_FILE}.backup.$(date +%Y%m%d_%H%M%S)"
+              cp "$BOOKMARKS_FILE" "$BACKUP"
+            fi
+
+            # Copy bookmarks
+            cp "$JSON_FILE" "$BOOKMARKS_FILE"
+            echo "✓ Imported: $PROFILE_NAME → $TARGET_DIR/Bookmarks"
+            IMPORTED_COUNT=$((IMPORTED_COUNT + 1))
+          }
+
+          # Import all JSON files from bookmarks directory
+          for json_file in "$DATA_DIR"/*.json; do
+            if [ -f "$json_file" ]; then
+              import_profile "$json_file"
+            fi
+          done
+
+          if [ $IMPORTED_COUNT -eq 0 ]; then
+            echo "No bookmarks were imported."
+          else
+            echo ""
+            echo "✓ Import complete! Imported $IMPORTED_COUNT profile(s)"
+            echo "  Restart Chromium to see changes."
+          fi
         '');
       };
 
@@ -181,14 +222,14 @@
           echo "Chromium Bookmarks Sync Tool"
           echo ""
           echo "Available commands:"
-          echo "  nix run .#list                                  List Chromium profiles"
-          echo "  nix run .#push -- <chromium-path> <git-path>    Push bookmarks from Chromium to git"
-          echo "  nix run .#pull -- <git-path> <chromium-path>    Pull bookmarks from git to Chromium"
+          echo "  nix run .#list      List Chromium profiles"
+          echo "  nix run .#export    Export ALL profiles → ./bookmarks/*.json"
+          echo "  nix run .#import    Import ALL from ./bookmarks/*.json → Chromium"
           echo ""
-          echo "Examples:"
-          echo "  nix run .#list"
-          echo "  nix run .#push -- ~/.config/chromium/Default/Bookmarks ~/git/bookmarks/work.json"
-          echo "  nix run .#pull -- ~/git/bookmarks/home.json ~/.config/chromium/\"Profile 1\"/Bookmarks"
+          echo "Workflow:"
+          echo "  1. Run 'nix run .#export' to save all bookmarks to ./bookmarks/"
+          echo "  2. Transfer ./bookmarks/ directory to another machine"
+          echo "  3. Run 'nix run .#import' to load bookmarks into Chromium"
         '');
       };
     };
